@@ -11,7 +11,6 @@ public class FilmSearchRequest {
     private String sortBy = "filmName";
     private String sortDirection = "asc";
 
-    // Геттеры и сеттеры
     public String getFilmName() {
         return filmName;
     }

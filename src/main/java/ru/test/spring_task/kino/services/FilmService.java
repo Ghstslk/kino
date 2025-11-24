@@ -2,12 +2,15 @@ package ru.test.spring_task.kino.services;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
-import ru.test.spring_task.kino.dto.KinopoiskFilm;
-import ru.test.spring_task.kino.dto.KinopoiskResponse;
+import ru.test.spring_task.kino.dto.*;
 import ru.test.spring_task.kino.models.Film;
 import ru.test.spring_task.kino.repositories.FilmRepository;
 
@@ -24,14 +27,33 @@ public class FilmService {
 
     private final RestTemplate restTemplate;
     private final FilmRepository filmRepository;
+    private final FilmMapper filmMapper;
+
 
     @Value("${kinopoisk.api.url}")
     private String baseUrl;
 
     @Autowired
-    public FilmService(RestTemplate restTemplate, FilmRepository filmRepository) {
+    public FilmService(RestTemplate restTemplate, FilmRepository filmRepository, FilmMapper filmMapper) {
         this.restTemplate = restTemplate;
         this.filmRepository = filmRepository;
+        this.filmMapper = filmMapper;
+    }
+
+    public Page<FilmDto> searchFilms(FilmSearchRequest request) {
+        Specification<Film> spec = FilmSpecifications.withFilters(request);
+
+        Sort sort = Sort.by(
+                request.getSortDirection().equalsIgnoreCase("desc") ?
+                        Sort.Direction.DESC : Sort.Direction.ASC,
+                request.getSortBy()
+        );
+
+        Pageable pageable = PageRequest.of(request.getPage(), request.getSize(), sort);
+
+        Page<Film> filmsPage = filmRepository.findAll(spec, pageable);
+
+        return filmsPage.map(filmMapper::toDto);
     }
 
     public void fetchAndSaveFilms() {
@@ -55,7 +77,6 @@ public class FilmService {
                     List<KinopoiskFilm> items = body.getItems();
 
                     if (items != null && !items.isEmpty()) {
-                        // Удаляем дубликаты в рамках текущей страницы
                         List<KinopoiskFilm> uniqueItems = removeDuplicates(items, KinopoiskFilm::getKinopoiskId);
 
                         // Проверяем уникальность в рамках всех страниц
@@ -98,11 +119,11 @@ public class FilmService {
                 }
             }
 
-            // Сохраняем фильмы с проверкой на уникальность в базе
+            // Сохраняем фильмы
             if (!allFilmsToSave.isEmpty()) {
-                saveFilmsWithDuplicateCheck(allFilmsToSave);
+                saveFilms(allFilmsToSave);
             } else {
-                System.out.println("No new films to save");
+                System.out.println("No films to save");
             }
 
         } catch (Exception e) {
@@ -111,7 +132,6 @@ public class FilmService {
         }
     }
 
-    // Удаление дубликатов в списке по ключу
     private <T> List<T> removeDuplicates(List<T> list, Function<? super T, ?> keyExtractor) {
         Set<Object> seen = ConcurrentHashMap.newKeySet();
         return list.stream()
@@ -119,75 +139,75 @@ public class FilmService {
                 .collect(Collectors.toList());
     }
 
-    // Сохранение с проверкой дубликатов в базе
-    private void saveFilmsWithDuplicateCheck(List<Film> films) {
-        // Собираем все filmId
-        Set<Long> filmIds = films.stream()
-                .map(Film::getFilmId)
-                .collect(Collectors.toSet());
-
-        // Получаем существующие ID из базы
-        Set<Long> existingIds = filmRepository.findExistingFilmIds(filmIds);
-
-        // Фильтруем только новые фильмы
-        List<Film> newFilms = films.stream()
-                .filter(f -> !existingIds.contains(f.getFilmId()))
-                .collect(Collectors.toList());
-
-        if (newFilms.isEmpty()) {
-            System.out.println("All films already exist in database");
-            return;
-        }
-
-        System.out.println("Saving " + newFilms.size() + " new films...");
-
-        // Сохраняем небольшими пакетами
+    private void saveFilms(List<Film> films) {
         int batchSize = 50;
         int totalSaved = 0;
+        int duplicates = 0;
 
-        for (int i = 0; i < newFilms.size(); i += batchSize) {
-            int toIndex = Math.min(i + batchSize, newFilms.size());
-            List<Film> batch = newFilms.subList(i, toIndex);
+        for (int i = 0; i < films.size(); i += batchSize) {
+            int toIndex = Math.min(i + batchSize, films.size());
+            List<Film> batch = films.subList(i, toIndex);
 
             try {
-                filmRepository.saveAll(batch);
-                totalSaved += batch.size();
-                System.out.println("Saved batch: " + batch.size() + " films");
-            } catch (DataIntegrityViolationException e) {
-                // Если возникли дубликаты, сохраняем по одному
-                System.out.println("Batch save failed, saving one by one...");
+                // Проверяем существование фильмов
+                Set<Long> filmIds = batch.stream()
+                        .map(Film::getFilmId)
+                        .collect(Collectors.toSet());
+
+                Set<Long> existingIds = filmRepository.findExistingFilmIds(filmIds);
+
+                // Фильтруем только новые фильмы
+                List<Film> newFilms = batch.stream()
+                        .filter(f -> !existingIds.contains(f.getFilmId()))
+                        .collect(Collectors.toList());
+
+                if (!newFilms.isEmpty()) {
+                    filmRepository.saveAll(newFilms);
+                    totalSaved += newFilms.size();
+                    System.out.println("Saved batch of " + newFilms.size() + " films");
+                }
+
+                duplicates += (batch.size() - newFilms.size());
+
+            } catch (Exception e) {
+                System.err.println("Error saving batch: " + e.getMessage());
+                // Сохраняем по одному при ошибке
                 saveOneByOne(batch);
                 totalSaved += batch.size();
             }
         }
 
-        System.out.println("Total saved: " + totalSaved + " films");
+        System.out.println("Total saved: " + totalSaved + " films, duplicates: " + duplicates);
     }
 
-    // Сохранение по одному фильму
     private void saveOneByOne(List<Film> films) {
         int saved = 0;
         int duplicates = 0;
 
         for (Film film : films) {
             try {
-                filmRepository.save(film);
-                saved++;
-            } catch (DataIntegrityViolationException e) {
-                System.out.println("Duplicate filmId skipped: " + film.getFilmId());
-                duplicates++;
+                // Проверяем, существует ли фильм
+                if (!filmRepository.existsByFilmId(film.getFilmId())) {
+                    filmRepository.save(film);
+                    saved++;
+                } else {
+                    duplicates++;
+                }
+            } catch (Exception e) {
+                System.err.println("Failed to save film " + film.getFilmId() + ": " + e.getMessage());
             }
         }
 
-        System.out.println("Saved: " + saved + ", Duplicates skipped: " + duplicates);
+        System.out.println("Saved: " + saved + ", Duplicates: " + duplicates);
     }
 
-    private Film convertToFilmEntity(KinopoiskFilm apiFilm) {
-        Film film = new Film();
-        film.setFilmId(apiFilm.getKinopoiskId());
-        film.setFilmName(apiFilm.getNameRu());
-        film.setYear(apiFilm.getYear());
-        film.setRating(apiFilm.getRatingKinopoisk());
-        return film;
+    public Film convertToFilmEntity(KinopoiskFilm apiFilm) {
+        FilmDto filmDto = new FilmDto();
+        filmDto.setFilmId(apiFilm.getKinopoiskId());
+        filmDto.setFilmName(apiFilm.getNameRu());
+        filmDto.setYear(apiFilm.getYear());
+        filmDto.setRating(apiFilm.getRatingKinopoisk());
+
+        return filmMapper.toEntity(filmDto);
     }
 }

@@ -5,20 +5,19 @@ import ru.test.spring_task.kino.models.Film;
 import java.util.List;
 
 public class FilmResponse {
-    private List<Film> films;
+    private List<FilmDto> films;
     private int currentPage;
     private int totalPages;
     private long totalItems;
 
-    public FilmResponse(List<Film> films, int currentPage, int totalPages, long totalItems) {
+    public FilmResponse(List<FilmDto> films, int currentPage, int totalPages, long totalItems) {
         this.films = films;
         this.currentPage = currentPage;
         this.totalPages = totalPages;
         this.totalItems = totalItems;
     }
 
-    // Геттеры
-    public List<Film> getFilms() {
+    public List<FilmDto> getFilms() {
         return films;
     }
 
